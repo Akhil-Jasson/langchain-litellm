@@ -369,6 +369,35 @@ def _issuer_digest(issuer: str) -> str:
     ).hex()
 
 
+def _responses_api_gap(model: str, provider: str) -> str | None:
+    """Why litellm does not send ``model``, as ``get_llm_provider`` names it for
+    ``provider``, to that provider's Responses API, or None when it does.
+
+    Whether litellm bridges a name hangs on its model map, and a provider without a
+    Responses API is answered over its chat API instead, so litellm is asked both.
+    """
+    # litellm 1.102 and later answer a name that asks for Chat Completions there, even
+    # when told to route every OpenAI call to the Responses API.
+    if model.startswith("chat_completions/"):
+        return "its name asks for Chat Completions"
+    config = litellm.utils.ProviderConfigManager.get_provider_responses_api_config(
+        provider=provider, model=model.removeprefix("responses/")
+    )
+    if config is None:
+        return f"litellm has no Responses API for provider {provider!r}"
+    bridge, _ = litellm.main.responses_api_bridge_check(
+        model=model, custom_llm_provider=provider
+    )
+    if bridge.get("mode") != "responses":
+        return "litellm sends it to Chat Completions"
+    return None
+
+
+def _sends_to_responses_api(model: str, provider: str) -> bool:
+    """Whether litellm sends ``model`` to ``provider``'s Responses API."""
+    return _responses_api_gap(model, provider) is None
+
+
 def _aliased(model: str | None) -> str | None:
     """The model litellm resolves ``model`` to through its alias map."""
     aliases = litellm.model_alias_map
@@ -1371,6 +1400,8 @@ class ChatLiteLLM(BaseChatModel):
     it drops Chat Completions-only params such as ``stop`` and ``n``. A model
     litellm cannot bridge raises ``ValueError``. ``None`` and ``False`` leave the
     route to litellm, which sends some models, such as ``gpt-5-pro``, there anyway.
+    On ``ChatLiteLLMRouter`` the flag checks the Router's deployments rather than
+    renaming them.
 
     A reply's reasoning item goes back on later turns when it carries encrypted
     content, the turn holds no other, and the model, endpoint and credentials are
@@ -1529,26 +1560,17 @@ class ChatLiteLLM(BaseChatModel):
             return None
         return getattr(self, field, None) or None
 
-    def _route_to_responses_api(
-        self, model: str, custom_llm_provider: str | None, api_base: str | None
-    ) -> str:
-        """Name ``model`` so litellm's own bridge carries the call to a Responses API.
-
-        Whether litellm bridges a name hangs on its model map, and a provider without
-        a Responses API is answered over its chat API instead, so litellm is asked both.
-        """
+    def _route_to_responses_api(self, params: Mapping[str, Any]) -> str:
+        """The model to send so litellm's own bridge carries the call to a Responses
+        API: ``params["model"]`` named ``<provider>/responses/<model>``."""
+        model = params["model"]
         named, provider, _, _ = litellm.get_llm_provider(
-            model=model, custom_llm_provider=custom_llm_provider, api_base=api_base
+            model=model,
+            custom_llm_provider=params.get("custom_llm_provider"),
+            api_base=params.get("api_base"),
         )
-        bare_model = named.removeprefix("responses/")
-        routed = f"responses/{bare_model}"
-        bridge, _ = litellm.main.responses_api_bridge_check(
-            model=routed, custom_llm_provider=provider
-        )
-        config = litellm.utils.ProviderConfigManager.get_provider_responses_api_config(
-            provider=provider, model=bare_model
-        )
-        if bridge.get("mode") != "responses" or config is None:
+        routed = f"responses/{named.removeprefix('responses/')}"
+        if not _sends_to_responses_api(routed, provider):
             raise ValueError(
                 f"use_responses_api=True, but litellm cannot send {model!r} to a "
                 "Responses API."
@@ -1589,11 +1611,7 @@ class ChatLiteLLM(BaseChatModel):
         if use_responses_api is None:
             use_responses_api = self.use_responses_api
         if use_responses_api:
-            merged["model"] = self._route_to_responses_api(
-                merged["model"],
-                merged.get("custom_llm_provider"),
-                merged.get("api_base"),
-            )
+            merged["model"] = self._route_to_responses_api(merged)
 
         redirected = {
             key: kwargs[key] for key in _DESTINATION_KEYS if kwargs.get(key) is not None
