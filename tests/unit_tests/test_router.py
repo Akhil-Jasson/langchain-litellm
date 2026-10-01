@@ -273,6 +273,41 @@ async def test_router_split_reply_keeps_its_tool_calls(
     assert [
         (call["name"], call["args"], call["id"]) for call in message.tool_calls
     ] == [("get_weather", {"city": "Paris"}, "call_1")]
+    assert message.response_metadata["id"] == "resp_1"
+
+
+@pytest.mark.parametrize("method", ["invoke", "ainvoke"])
+@pytest.mark.asyncio
+async def test_router_use_previous_response_id_trims_history(
+    monkeypatch: pytest.MonkeyPatch, method: str
+) -> None:
+    """Router requests keep only the turns after the latest Responses API reply."""
+    requests = serve_http(monkeypatch, responses_api_reply(message_item("Fine.")))
+    llm = ChatLiteLLMRouter(
+        router=_router_serving("openai/responses/gpt-4o-mini"),
+        use_previous_response_id=True,
+    )
+    history = [
+        HumanMessage("Hello"),
+        AIMessage("Hi.", response_metadata={"id": "resp_previous"}),
+        HumanMessage("How are you?"),
+    ]
+
+    if method == "invoke":
+        message = llm.invoke(history)
+    else:
+        message = await llm.ainvoke(history)
+
+    payload = json.loads(requests[0].content)
+    assert payload["previous_response_id"] == "resp_previous"
+    assert payload["input"] == [
+        {
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": "How are you?"}],
+        }
+    ]
+    assert message.response_metadata["id"] == "resp_1"
 
 
 def get_weather(city: str) -> str:
@@ -345,6 +380,7 @@ async def test_router_sends_built_in_tools_through_a_responses_deployment(
     assert [tool["type"] for tool in tools] == ["function", "web_search"]
     assert message.content == "Sunny."
     assert message.tool_calls == []
+    assert message.response_metadata["id"] == "resp_1"
 
 
 def test_router_n_above_one_keeps_each_completion(

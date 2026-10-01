@@ -128,6 +128,25 @@ def _get_field(source: Any, name: str) -> Any:
     return getattr(source, name, None)
 
 
+def _last_messages_with_response_id(
+    messages: list[BaseMessage],
+) -> tuple[list[BaseMessage], str | None]:
+    """Return messages after the latest Responses API reply and that reply's id."""
+    for index in range(len(messages) - 1, -1, -1):
+        message = messages[index]
+        if isinstance(message, AIMessage):
+            response_id = message.response_metadata.get("id")
+            if isinstance(response_id, str):
+                return messages[index + 1 :], response_id
+    return messages, None
+
+
+def _response_id_metadata(response: Any) -> dict[str, Any]:
+    """Keep a Responses API id when LiteLLM exposes one."""
+    response_id = _get_field(response, "id")
+    return {"id": response_id} if response_id is not None else {}
+
+
 # Hosts that serve Claude through litellm's Anthropic message format. An
 # `anthropic/` route always does, including Anthropic-compatible endpoints like Kimi's.
 _CLAUDE_HOSTS = frozenset({"bedrock", "vertex_ai", "azure_ai"})
@@ -1419,6 +1438,13 @@ class ChatLiteLLM(BaseChatModel):
     ["reasoning.encrypted_content"]}}``, adding ``"store": False`` for stateless
     turns. litellm keeps only the last item of a reply it does not stream, and calls
     it routes to the Responses API on its own keep none."""
+    use_previous_response_id: bool = False
+    """Chain Responses API calls through the latest prior response.
+
+    When enabled, the messages up to and including the latest ``AIMessage`` with a
+    response id are omitted and that id is sent as ``previous_response_id``. This
+    always routes the call through the Responses API.
+    """
     base_model: str | None = None
     extra_headers: dict[str, str] | None = Field(default=None, repr=False)
     request_timeout: float | tuple[float, float] | None = None
@@ -1606,8 +1632,9 @@ class ChatLiteLLM(BaseChatModel):
         A ``None`` override means "not supplied", matching how litellm reads params.
 
         ``use_responses_api`` routes the destination once it is settled, so a
-        redirected call reaches the Responses API too. It is read like the
-        destination, from the call, ``model_kwargs`` or the field, and never sent.
+        redirected call reaches the Responses API too. ``use_previous_response_id``
+        also requires that route, but is consumed before this method builds the
+        request and never reaches litellm.
         """
         merged = {**params, **kwargs}
 
@@ -1619,7 +1646,7 @@ class ChatLiteLLM(BaseChatModel):
         use_responses_api = merged.pop("use_responses_api", None)
         if use_responses_api is None:
             use_responses_api = self.use_responses_api
-        if use_responses_api:
+        if use_responses_api or self.use_previous_response_id:
             merged["model"] = self._route_to_responses_api(merged)
 
         redirected = {
@@ -1810,7 +1837,10 @@ class ChatLiteLLM(BaseChatModel):
             )
             return generate_from_stream(stream_iter)
 
+        messages, response_id = self._messages_for_request(messages)
         message_dicts, params = self._create_message_dicts(messages, stop)
+        if response_id is not None:
+            params["previous_response_id"] = response_id
         params = self._merge_call_params(params, kwargs)
         # This branch parses a mapping, so it must not inherit stream=True from a
         # streaming=True instance that the caller overrode with stream=False.
@@ -1839,6 +1869,7 @@ class ChatLiteLLM(BaseChatModel):
                 message.response_metadata = {
                     "model_name": self.model_name or self.model,
                     "model_provider": "litellm",
+                    **_response_id_metadata(response),
                     **_cost_metadata(response),
                 }
                 message.usage_metadata = usage_metadata
@@ -1875,6 +1906,14 @@ class ChatLiteLLM(BaseChatModel):
         message_dicts = [_convert_message_to_dict(m) for m in messages]
         return message_dicts, params
 
+    def _messages_for_request(
+        self, messages: list[BaseMessage]
+    ) -> tuple[list[BaseMessage], str | None]:
+        """Trim history for server-side Responses API state when requested."""
+        if self.use_previous_response_id:
+            return _last_messages_with_response_id(messages)
+        return messages, None
+
     def _stream(
         self,
         messages: list[BaseMessage],
@@ -1882,7 +1921,10 @@ class ChatLiteLLM(BaseChatModel):
         run_manager: CallbackManagerForLLMRun | None = None,
         **kwargs: Any,
     ) -> Iterator[ChatGenerationChunk]:
+        messages, response_id = self._messages_for_request(messages)
         message_dicts, params = self._create_message_dicts(messages, stop)
+        if response_id is not None:
+            params["previous_response_id"] = response_id
         params = {**self._merge_call_params(params, kwargs), "stream": True}
         if "stream_options" not in kwargs:
             params["stream_options"] = (
@@ -1896,6 +1938,7 @@ class ChatLiteLLM(BaseChatModel):
         default_chunk_class = AIMessageChunk
         first_chunk_yielded = False
         cost_named = False
+        response_id = None
 
         for chunk in self.completion_with_retry(
             messages=message_dicts, run_manager=run_manager, **params
@@ -1903,6 +1946,8 @@ class ChatLiteLLM(BaseChatModel):
             # Ensure chunk is a dict
             if not isinstance(chunk, dict):
                 chunk = chunk.model_dump()
+            if chunk.get("id") is not None:
+                response_id = chunk["id"]
 
             # Extract usage metadata first
             usage_metadata = None
@@ -1947,8 +1992,14 @@ class ChatLiteLLM(BaseChatModel):
                 chunk.response_metadata = {
                     "model_name": self.model_name or self.model,
                     "model_provider": "litellm",
+                    **({"id": response_id} if response_id is not None else {}),
                 }
                 first_chunk_yielded = True
+
+            if response_id is not None and isinstance(chunk, AIMessageChunk):
+                # The bridge can first expose the id on a later event. Putting it
+                # there still preserves it when LangChain merges the stream.
+                chunk.response_metadata.setdefault("id", response_id)
 
             if finish_reason is not None and isinstance(chunk, AIMessageChunk):
                 chunk.response_metadata["finish_reason"] = finish_reason
@@ -1975,7 +2026,10 @@ class ChatLiteLLM(BaseChatModel):
         run_manager: AsyncCallbackManagerForLLMRun | None = None,
         **kwargs: Any,
     ) -> AsyncIterator[ChatGenerationChunk]:
+        messages, response_id = self._messages_for_request(messages)
         message_dicts, params = self._create_message_dicts(messages, stop)
+        if response_id is not None:
+            params["previous_response_id"] = response_id
         params = {**self._merge_call_params(params, kwargs), "stream": True}
         if "stream_options" not in kwargs:
             params["stream_options"] = (
@@ -1989,6 +2043,7 @@ class ChatLiteLLM(BaseChatModel):
         default_chunk_class = AIMessageChunk
         first_chunk_yielded = False
         cost_named = False
+        response_id = None
 
         async for chunk in await self.acompletion_with_retry(
             messages=message_dicts, run_manager=run_manager, **params
@@ -1996,6 +2051,8 @@ class ChatLiteLLM(BaseChatModel):
             # Ensure chunk is a dict
             if not isinstance(chunk, dict):
                 chunk = chunk.model_dump()
+            if chunk.get("id") is not None:
+                response_id = chunk["id"]
 
             # Extract usage metadata first
             usage_metadata = None
@@ -2039,8 +2096,14 @@ class ChatLiteLLM(BaseChatModel):
                 chunk.response_metadata = {
                     "model_name": self.model_name or self.model,
                     "model_provider": "litellm",
+                    **({"id": response_id} if response_id is not None else {}),
                 }
                 first_chunk_yielded = True
+
+            if response_id is not None and isinstance(chunk, AIMessageChunk):
+                # The bridge can first expose the id on a later event. Putting it
+                # there still preserves it when LangChain merges the stream.
+                chunk.response_metadata.setdefault("id", response_id)
 
             if finish_reason is not None and isinstance(chunk, AIMessageChunk):
                 chunk.response_metadata["finish_reason"] = finish_reason
@@ -2075,7 +2138,10 @@ class ChatLiteLLM(BaseChatModel):
             )
             return await agenerate_from_stream(stream_iter)
 
+        messages, response_id = self._messages_for_request(messages)
         message_dicts, params = self._create_message_dicts(messages, stop)
+        if response_id is not None:
+            params["previous_response_id"] = response_id
         params = self._merge_call_params(params, kwargs)
         # This branch parses a mapping, so it must not inherit stream=True from a
         # streaming=True instance that the caller overrode with stream=False.

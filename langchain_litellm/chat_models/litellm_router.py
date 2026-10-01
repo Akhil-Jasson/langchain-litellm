@@ -33,6 +33,7 @@ from langchain_litellm.chat_models.litellm import (
     _keep_reasoning_items,
     _keep_thinking_blocks,
     _rejoin_split_reply,
+    _response_id_metadata,
     _responses_api_gap,
     _sends_manual_thinking,
     _sends_to_responses_api,
@@ -462,7 +463,10 @@ class ChatLiteLLMRouter(ChatLiteLLM):
             )
             return generate_from_stream(stream_iter)
 
+        messages, response_id = self._messages_for_request(messages)
         message_dicts, params = self._create_message_dicts(messages, stop)
+        if response_id is not None:
+            params["previous_response_id"] = response_id
         params = self._merge_call_params(params, kwargs)
         # This branch parses a mapping, so it must not inherit stream=True from a
         # streaming=True instance that the caller overrode with stream=False.
@@ -490,7 +494,10 @@ class ChatLiteLLMRouter(ChatLiteLLM):
         **kwargs: Any,
     ) -> Iterator[ChatGenerationChunk]:
         default_chunk_class = AIMessageChunk
+        messages, response_id = self._messages_for_request(messages)
         message_dicts, params = self._create_message_dicts(messages, stop)
+        if response_id is not None:
+            params["previous_response_id"] = response_id
         params = {**self._merge_call_params(params, kwargs), "stream": True}
         if "stream_options" not in kwargs:
             params["stream_options"] = (
@@ -511,10 +518,13 @@ class ChatLiteLLMRouter(ChatLiteLLM):
         thinking = _ThinkingBlockAssembler(*binding) if binding else None
         first_chunk_yielded = False
         cost_named = False
+        response_id = None
 
         for chunk in self.completion_with_retry(
             messages=message_dicts, run_manager=run_manager, **params
         ):
+            if chunk.get("id") is not None:
+                response_id = chunk["id"]
             usage_metadata = None
             if chunk.get("usage"):
                 usage_metadata = _create_usage_metadata(chunk["usage"])
@@ -560,11 +570,17 @@ class ChatLiteLLMRouter(ChatLiteLLM):
                 chunk.response_metadata = {
                     "model_name": self.model_name or self.model,
                     "model_provider": "litellm",
+                    **({"id": response_id} if response_id is not None else {}),
                     # Named once: it holds for the whole response, and langchain
                     # concatenates a string that two merged chunks both carry.
                     **deployment_metadata,
                 }
                 first_chunk_yielded = True
+
+            if response_id is not None and isinstance(chunk, AIMessageChunk):
+                # The bridge can first expose the id on a later event. Putting it
+                # there still preserves it when LangChain merges the stream.
+                chunk.response_metadata.setdefault("id", response_id)
 
             if finish_reason is not None and isinstance(chunk, AIMessageChunk):
                 chunk.response_metadata["finish_reason"] = finish_reason
@@ -592,7 +608,10 @@ class ChatLiteLLMRouter(ChatLiteLLM):
         **kwargs: Any,
     ) -> AsyncIterator[ChatGenerationChunk]:
         default_chunk_class = AIMessageChunk
+        messages, response_id = self._messages_for_request(messages)
         message_dicts, params = self._create_message_dicts(messages, stop)
+        if response_id is not None:
+            params["previous_response_id"] = response_id
         params = {**self._merge_call_params(params, kwargs), "stream": True}
         if "stream_options" not in kwargs:
             params["stream_options"] = (
@@ -613,10 +632,13 @@ class ChatLiteLLMRouter(ChatLiteLLM):
         thinking = _ThinkingBlockAssembler(*binding) if binding else None
         first_chunk_yielded = False
         cost_named = False
+        response_id = None
 
         async for chunk in await self.acompletion_with_retry(
             messages=message_dicts, run_manager=run_manager, **params
         ):
+            if chunk.get("id") is not None:
+                response_id = chunk["id"]
             # Parse usage metadata first
             usage_metadata = None
             if chunk.get("usage"):
@@ -661,11 +683,17 @@ class ChatLiteLLMRouter(ChatLiteLLM):
                 chunk.response_metadata = {
                     "model_name": self.model_name or self.model,
                     "model_provider": "litellm",
+                    **({"id": response_id} if response_id is not None else {}),
                     # Named once: it holds for the whole response, and langchain
                     # concatenates a string that two merged chunks both carry.
                     **deployment_metadata,
                 }
                 first_chunk_yielded = True
+
+            if response_id is not None and isinstance(chunk, AIMessageChunk):
+                # The bridge can first expose the id on a later event. Putting it
+                # there still preserves it when LangChain merges the stream.
+                chunk.response_metadata.setdefault("id", response_id)
 
             if finish_reason is not None and isinstance(chunk, AIMessageChunk):
                 chunk.response_metadata["finish_reason"] = finish_reason
@@ -702,7 +730,10 @@ class ChatLiteLLMRouter(ChatLiteLLM):
             )
             return await agenerate_from_stream(stream_iter)
 
+        messages, response_id = self._messages_for_request(messages)
         message_dicts, params = self._create_message_dicts(messages, stop)
+        if response_id is not None:
+            params["previous_response_id"] = response_id
         params = self._merge_call_params(params, kwargs)
         # This branch parses a mapping, so it must not inherit stream=True from a
         # streaming=True instance that the caller overrode with stream=False.
@@ -768,6 +799,7 @@ class ChatLiteLLMRouter(ChatLiteLLM):
                 message.response_metadata = {
                     "model_name": self.model_name or self.model,
                     "model_provider": "litellm",
+                    **_response_id_metadata(response),
                     **_deployment_metadata(response),
                     **_cost_metadata(response),
                 }

@@ -784,6 +784,68 @@ async def test_a_split_reply_keeps_its_tool_calls(
         (call["name"], call["args"], call["id"]) for call in message.tool_calls
     ] == [("get_weather", {"city": "Paris"}, "call_1")]
     assert message.response_metadata["finish_reason"] == "tool_calls"
+    assert message.response_metadata["id"] == "resp_1"
+
+
+@pytest.mark.parametrize("method", ["invoke", "ainvoke"])
+@pytest.mark.asyncio
+async def test_use_previous_response_id_trims_history_and_reaches_responses_api(
+    monkeypatch: pytest.MonkeyPatch, method: str
+) -> None:
+    """The server continues from its reply, so only the new turn is sent."""
+    requests = serve_http(monkeypatch, responses_api_reply(message_item("Fine.")))
+    llm = ChatLiteLLM(model="gpt-4o-mini", api_key="k", use_previous_response_id=True)
+    history = [
+        HumanMessage("Hello"),
+        AIMessage("Hi.", response_metadata={"id": "resp_previous"}),
+        HumanMessage("How are you?"),
+    ]
+
+    if method == "invoke":
+        message = llm.invoke(history)
+    else:
+        message = await llm.ainvoke(history)
+
+    payload = json.loads(requests[0].content)
+    assert requests[0].url.path.endswith("/responses")
+    assert payload["previous_response_id"] == "resp_previous"
+    assert payload["input"] == [
+        {
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": "How are you?"}],
+        }
+    ]
+    assert message.response_metadata["id"] == "resp_1"
+
+
+@pytest.mark.parametrize("method", ["stream", "astream"])
+@pytest.mark.asyncio
+async def test_stream_keeps_a_responses_api_id(method: str) -> None:
+    """A streamed response id is retained when chunks are merged."""
+    llm = ChatLiteLLM(model="gpt-4o-mini", api_key="k")
+    chunks = [
+        {
+            "id": "resp_1",
+            "choices": [{"delta": {"role": "assistant", "content": "Fine."}}],
+        }
+    ]
+
+    if method == "stream":
+        with patch.object(llm.client, "completion", return_value=iter(chunks)):
+            message = _merge(list(llm.stream("hi")))
+    else:
+
+        async def _stream() -> Any:
+            for chunk in chunks:
+                yield chunk
+
+        with patch.object(
+            llm.client, "acompletion", new=AsyncMock(return_value=_stream())
+        ):
+            message = _merge([chunk async for chunk in llm.astream("hi")])
+
+    assert message.response_metadata["id"] == "resp_1"
 
 
 def test_a_split_reply_keeps_every_text_part(monkeypatch: pytest.MonkeyPatch) -> None:
