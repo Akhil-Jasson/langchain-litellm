@@ -308,17 +308,18 @@ class ChatLiteLLMRouter(ChatLiteLLM):
         sent = _without_none(params)
         unknown = self._unknown_reach(sent)
         if unknown is not None:
+            hint = (
+                "The flag only checks: without use_responses_api, a deployment "
+                "named '<provider>/responses/<model>' still reaches the "
+                "Responses API."
+                if flag == "use_responses_api"
+                else "Consolidate the group to one shared store or disable "
+                "use_previous_response_id."
+            )
             raise ValueError(
                 f"{flag}=True, but {unknown}, so a call to model group "
                 f"{group!r} may reach deployments ChatLiteLLMRouter cannot check. "
-                (
-                    "The flag only checks: without use_responses_api, a deployment "
-                    "named '<provider>/responses/<model>' still reaches the "
-                    "Responses API."
-                    if flag == "use_responses_api"
-                    else "Consolidate the group to one shared store or disable "
-                    "use_previous_response_id."
-                )
+                f"{hint}"
             )
         deployments = self._deployments(sent)
         if not deployments:

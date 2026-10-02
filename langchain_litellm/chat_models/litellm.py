@@ -1624,8 +1624,7 @@ class ChatLiteLLM(BaseChatModel):
                 else "use_responses_api"
             )
             raise ValueError(
-                f"{flag}=True, but litellm cannot send {model!r} to a "
-                "Responses API."
+                f"{flag}=True, but litellm cannot send {model!r} to a Responses API."
             )
         return f"{provider}/{routed}"
 
@@ -1965,14 +1964,17 @@ class ChatLiteLLM(BaseChatModel):
             )
         if response_id is None:
             return
-        if any(
-            params.get(key)
-            for key in (
-                "fallbacks",
-                "context_window_fallbacks",
-                "content_policy_fallbacks",
+        if (
+            any(
+                params.get(key)
+                for key in (
+                    "fallbacks",
+                    "context_window_fallbacks",
+                    "content_policy_fallbacks",
+                )
             )
-        ) or litellm.model_fallbacks:
+            or litellm.model_fallbacks
+        ):
             raise ValueError(
                 "use_previous_response_id=True cannot be used with fallbacks; "
                 "a fallback may not share the response store that issued the id."

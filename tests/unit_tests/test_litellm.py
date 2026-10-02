@@ -870,7 +870,7 @@ async def test_use_previous_response_id_streams_and_chains(
 
 
 @pytest.mark.parametrize(
-    "system", [SystemMessage("Rules"), ChatMessage("system", "Rules")]
+    "system", [SystemMessage("Rules"), ChatMessage(role="system", content="Rules")]
 )
 def test_use_previous_response_id_keeps_string_system_instructions(system: Any) -> None:
     llm = ChatLiteLLM(model="gpt-4o-mini", api_key="k", use_previous_response_id=True)
@@ -932,7 +932,7 @@ def test_use_previous_response_id_walks_back_past_chat_completion_id() -> None:
 
     messages, chained_id = llm._messages_for_request(history, {})
 
-    assert messages == history[1:]
+    assert messages == history[2:]
     assert chained_id == "resp_1"
 
 
@@ -968,7 +968,7 @@ def test_use_previous_response_id_flag_off_keeps_history() -> None:
 
 @pytest.mark.parametrize("kind", ["model", "router"])
 @pytest.mark.parametrize(
-    "system", [SystemMessage("Rules"), ChatMessage("system", "Rules")]
+    "system", [SystemMessage("Rules"), ChatMessage(role="system", content="Rules")]
 )
 def test_use_previous_response_id_resends_system_instructions(
     monkeypatch: pytest.MonkeyPatch, kind: str, system: Any
@@ -1014,7 +1014,7 @@ def test_use_previous_response_id_rejects_per_call_flag() -> None:
 
     with pytest.raises(
         ValueError,
-        match="set use_previous_response_id on the ChatLiteLLM model",
+        match="Set use_previous_response_id on the ChatLiteLLM model",
     ):
         llm.invoke("hi", use_previous_response_id=True)
 
@@ -1028,7 +1028,7 @@ def test_use_previous_response_id_rejects_model_kwargs_flag() -> None:
 
     with pytest.raises(
         ValueError,
-        match="set use_previous_response_id on the ChatLiteLLM model",
+        match="not in model_kwargs",
     ):
         llm.invoke("hi")
 
@@ -1075,9 +1075,7 @@ async def test_stream_keeps_a_responses_api_id(method: str) -> None:
         },
         {
             "id": "resp_backup",
-            "choices": [
-                {"delta": {"content": ""}, "finish_reason": "stop"}
-            ],
+            "choices": [{"delta": {"content": ""}, "finish_reason": "stop"}],
         },
     ]
 
