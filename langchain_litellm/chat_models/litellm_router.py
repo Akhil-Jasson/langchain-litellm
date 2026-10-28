@@ -415,6 +415,7 @@ class ChatLiteLLMRouter(ChatLiteLLM):
                 "it, such as a wildcard one. Add an explicit deployment for the "
                 f"group or disable {flag}."
             )
+        # Ahead of the deployment checks: under a proxy they name the wrong cause.
         if self.use_previous_response_id and (
             litellm.use_litellm_proxy is True
             or litellm.get_secret_bool("USE_LITELLM_PROXY") is True
@@ -455,54 +456,55 @@ class ChatLiteLLMRouter(ChatLiteLLM):
                 f"of model group {group!r} to a Responses API:{lines}{fix}"
             )
         if self.use_previous_response_id:
-            # previous_response_id names stored state, not a destination, so only the
-            # store check leaves it out; the checks above still see it.
-            store_params = {
-                key: value
-                for key, value in sent.items()
-                if key != "previous_response_id"
-            }
-            deployments = self._deployments(store_params)
-            if any(
-                deployment.get("store") is False
-                or (
-                    isinstance(deployment.get("extra_body"), Mapping)
-                    and deployment["extra_body"].get("store") is False
-                )
-                for deployment in deployments
-            ):
-                raise ValueError(
-                    "use_previous_response_id=True requires stored Responses API "
-                    f"replies, but store=False is configured in store or "
-                    f"extra_body for model group {group!r}. Remove store=False or "
-                    "disable use_previous_response_id."
-                )
-            store_keys = [
-                _deployment_store_key(deployment) for deployment in deployments
-            ]
-            if any(key is None for key in store_keys):
-                raise ValueError(
-                    "use_previous_response_id=True cannot resolve the response "
-                    f"store for every deployment of model group {group!r}. Set a "
-                    "supported provider and API base, or disable "
-                    "use_previous_response_id."
-                )
-            if any(key != store_keys[0] for key in store_keys[1:]):
-                differences = []
-                if len({key[0] for key in store_keys if key is not None}) > 1:
-                    differences.append("different providers")
-                if len({key[1] for key in store_keys if key is not None}) > 1:
-                    differences.append("different API base URLs")
-                if len({key[2] for key in store_keys if key is not None}) > 1:
-                    differences.append("different credentials")
-                raise ValueError(
-                    "use_previous_response_id=True cannot safely chain model "
-                    f"group {group!r} because deployments use "
-                    f"{', '.join(differences)}. Configure the deployments with "
-                    "one shared provider, API base, and credentials, or disable "
-                    "use_previous_response_id."
-                )
+            self._check_one_response_store(sent, group)
         return group
+
+    def _check_one_response_store(self, sent: dict[str, Any], group: str) -> None:
+        """Refuse a chained call unless every deployment of ``group`` keeps its
+        replies in one response store, the one that issued the id it chains on."""
+        # previous_response_id names stored state, not a destination, so only this
+        # check leaves it out; the reach checks still see it.
+        store_params = {
+            key: value for key, value in sent.items() if key != "previous_response_id"
+        }
+        deployments = self._deployments(store_params)
+        if any(
+            deployment.get("store") is False
+            or (
+                isinstance(deployment.get("extra_body"), Mapping)
+                and deployment["extra_body"].get("store") is False
+            )
+            for deployment in deployments
+        ):
+            raise ValueError(
+                "use_previous_response_id=True requires stored Responses API "
+                f"replies, but store=False is configured in store or "
+                f"extra_body for model group {group!r}. Remove store=False or "
+                "disable use_previous_response_id."
+            )
+        store_keys = [_deployment_store_key(deployment) for deployment in deployments]
+        if any(key is None for key in store_keys):
+            raise ValueError(
+                "use_previous_response_id=True cannot resolve the response "
+                f"store for every deployment of model group {group!r}. Set a "
+                "supported provider and API base, or disable "
+                "use_previous_response_id."
+            )
+        if any(key != store_keys[0] for key in store_keys[1:]):
+            differences = []
+            if len({key[0] for key in store_keys if key is not None}) > 1:
+                differences.append("different providers")
+            if len({key[1] for key in store_keys if key is not None}) > 1:
+                differences.append("different API base URLs")
+            if len({key[2] for key in store_keys if key is not None}) > 1:
+                differences.append("different credentials")
+            raise ValueError(
+                "use_previous_response_id=True cannot safely chain model "
+                f"group {group!r} because deployments use "
+                f"{', '.join(differences)}. Configure the deployments with "
+                "one shared provider, API base, and credentials, or disable "
+                "use_previous_response_id."
+            )
 
     def _replay_params(self, params: dict[str, Any]) -> Mapping[str, Any]:
         """The group's deployment as sent. With an endpoint there is at least one,
