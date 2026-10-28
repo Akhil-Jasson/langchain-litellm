@@ -635,7 +635,7 @@ class ChatLiteLLMRouter(ChatLiteLLM):
         if chained_response_id is not None:
             params["previous_response_id"] = chained_response_id
         params = self._merge_call_params(params, kwargs)
-        self._validate_chained_request(chained_response_id, params)
+        self._validate_chained_request(params)
         # This branch parses a mapping, so it must not inherit stream=True from a
         # streaming=True instance that the caller overrode with stream=False.
         params["stream"] = False
@@ -669,7 +669,7 @@ class ChatLiteLLMRouter(ChatLiteLLM):
         if chained_response_id is not None:
             params["previous_response_id"] = chained_response_id
         params = {**self._merge_call_params(params, kwargs), "stream": True}
-        self._validate_chained_request(chained_response_id, params)
+        self._validate_chained_request(params)
         if "stream_options" not in kwargs:
             params["stream_options"] = (
                 self.stream_options
@@ -782,7 +782,7 @@ class ChatLiteLLMRouter(ChatLiteLLM):
         if chained_response_id is not None:
             params["previous_response_id"] = chained_response_id
         params = {**self._merge_call_params(params, kwargs), "stream": True}
-        self._validate_chained_request(chained_response_id, params)
+        self._validate_chained_request(params)
         if "stream_options" not in kwargs:
             params["stream_options"] = (
                 self.stream_options
@@ -903,7 +903,7 @@ class ChatLiteLLMRouter(ChatLiteLLM):
         if chained_response_id is not None:
             params["previous_response_id"] = chained_response_id
         params = self._merge_call_params(params, kwargs)
-        self._validate_chained_request(chained_response_id, params)
+        self._validate_chained_request(params)
         # This branch parses a mapping, so it must not inherit stream=True from a
         # streaming=True instance that the caller overrode with stream=False.
         params["stream"] = False

@@ -1968,7 +1968,7 @@ class ChatLiteLLM(BaseChatModel):
         if chained_response_id is not None:
             params["previous_response_id"] = chained_response_id
         params = self._merge_call_params(params, kwargs)
-        self._validate_chained_request(chained_response_id, params)
+        self._validate_chained_request(params)
         # This branch parses a mapping, so it must not inherit stream=True from a
         # streaming=True instance that the caller overrode with stream=False.
         params["stream"] = False
@@ -2046,22 +2046,19 @@ class ChatLiteLLM(BaseChatModel):
             return _last_messages_with_response_id(messages)
         return messages, None
 
-    def _validate_chained_request(
-        self, response_id: str | None, params: Mapping[str, Any]
-    ) -> None:
+    def _validate_chained_request(self, params: Mapping[str, Any]) -> None:
         """Refuse chaining when replies are not stored or fallbacks change stores."""
+        if not self.use_previous_response_id:
+            return
         extra_body = params.get("extra_body")
-        if self.use_previous_response_id and (
-            params.get("store") is False
-            or (isinstance(extra_body, Mapping) and extra_body.get("store") is False)
+        if params.get("store") is False or (
+            isinstance(extra_body, Mapping) and extra_body.get("store") is False
         ):
             raise ValueError(
                 "use_previous_response_id=True requires stored Responses API "
                 "replies, but store=False was configured in store or extra_body. "
                 "Remove store=False or disable use_previous_response_id."
             )
-        if not self.use_previous_response_id:
-            return
         fallback = next(
             (
                 key
@@ -2085,8 +2082,6 @@ class ChatLiteLLM(BaseChatModel):
                 f"{cause}; remove that fallback setting or disable "
                 "use_previous_response_id."
             )
-        if response_id is None:
-            return
 
     def _stream(
         self,
@@ -2100,7 +2095,7 @@ class ChatLiteLLM(BaseChatModel):
         if chained_response_id is not None:
             params["previous_response_id"] = chained_response_id
         params = {**self._merge_call_params(params, kwargs), "stream": True}
-        self._validate_chained_request(chained_response_id, params)
+        self._validate_chained_request(params)
         if "stream_options" not in kwargs:
             params["stream_options"] = (
                 self.stream_options
@@ -2204,7 +2199,7 @@ class ChatLiteLLM(BaseChatModel):
         if chained_response_id is not None:
             params["previous_response_id"] = chained_response_id
         params = {**self._merge_call_params(params, kwargs), "stream": True}
-        self._validate_chained_request(chained_response_id, params)
+        self._validate_chained_request(params)
         if "stream_options" not in kwargs:
             params["stream_options"] = (
                 self.stream_options
@@ -2315,7 +2310,7 @@ class ChatLiteLLM(BaseChatModel):
         if chained_response_id is not None:
             params["previous_response_id"] = chained_response_id
         params = self._merge_call_params(params, kwargs)
-        self._validate_chained_request(chained_response_id, params)
+        self._validate_chained_request(params)
         # This branch parses a mapping, so it must not inherit stream=True from a
         # streaming=True instance that the caller overrode with stream=False.
         params["stream"] = False
