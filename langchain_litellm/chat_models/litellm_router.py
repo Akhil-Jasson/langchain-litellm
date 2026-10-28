@@ -176,6 +176,13 @@ class ChatLiteLLMRouter(ChatLiteLLM):
     ``openai/gpt-5-pro``, passes, but its reasoning items do not go back; name it
     ``openai/responses/gpt-5-pro`` for that.
 
+    ``use_previous_response_id=True`` checks the same way, then also raises unless
+    every deployment of the group keeps its replies in one response store: the same
+    provider, base and credentials, including any a named credential supplies. A
+    chained call may land on any deployment, and only the store that issued its id
+    holds that reply. It raises under a litellm proxy too, since the proxy picks
+    the store.
+
     Example:
         .. code-block:: python
 

@@ -149,7 +149,8 @@ def _last_messages_with_response_id(
 
 
 def _response_id_metadata(response: Any) -> dict[str, Any]:
-    """Keep a Responses API id when LiteLLM exposes one."""
+    """The reply's id as litellm returns it: the upstream ``resp_`` id from its
+    Responses API bridge, a ``chatcmpl-`` id from Chat Completions."""
     response_id = _get_field(response, "id")
     return {"id": response_id} if response_id is not None else {}
 
@@ -1526,16 +1527,18 @@ class ChatLiteLLM(BaseChatModel):
     turns. litellm keeps only the last item of a reply it does not stream, and calls
     it routes to the Responses API on its own keep none."""
     use_previous_response_id: bool = False
-    """Chain Responses API calls through the latest prior response.
+    """Chain Responses API calls through the latest stored response.
 
-    When enabled, the messages up to and including the latest ``AIMessage`` with a
-    Responses API id (``resp_...``) are omitted and that id is sent as
-    ``previous_response_id``. String system messages are retained as instructions,
-    since the server does not inherit them. Chaining requires stored responses;
-    ``store=False`` raises ``ValueError``. Router groups must share a response
-    store, and Router Responses routing checks the deployments without renaming
-    them. This option is a model field; an explicit ``previous_response_id`` takes
-    precedence and leaves the supplied history intact.
+    Each call sends the id of the latest ``AIMessage`` whose ``response_metadata``
+    holds a Responses API id (``resp_...``) as ``previous_response_id``, with only
+    the turns after that message, through litellm's Responses API. String system
+    messages go again as instructions, since the server never carries those over. A
+    caller's own ``previous_response_id`` leaves the history as given.
+
+    Set it on the model: a per-call or ``model_kwargs`` value raises ``ValueError``,
+    as do ``store=False`` and any fallback, since a fallback may answer from a store
+    that never issued the id. On ``ChatLiteLLMRouter`` it checks the deployments
+    rather than renaming them, and the group must share one response store.
     """
     base_model: str | None = None
     extra_headers: dict[str, str] | None = Field(default=None, repr=False)
