@@ -399,8 +399,8 @@ class ChatLiteLLMRouter(ChatLiteLLM):
                 "named '<provider>/responses/<model>' still reaches the "
                 "Responses API."
                 if flag == "use_responses_api"
-                else "Consolidate the group to one shared store or disable "
-                "use_previous_response_id."
+                else "Chained calls must reach one response store, so remove that "
+                "routing or disable use_previous_response_id."
             )
             raise ValueError(
                 f"{flag}=True, but {unknown}, so a call to model group "
@@ -443,16 +443,16 @@ class ChatLiteLLMRouter(ChatLiteLLM):
                 gaps.setdefault(deployment["model"], gap)
         if gaps:
             lines = "".join(f"\n- {model!r}: {gap}" for model, gap in gaps.items())
+            # Each line names the rename that fixes it, where a rename can.
             fix = (
-                "Chain an OpenAI or Azure Responses deployment, or drop "
+                "\nChain only deployments litellm sends to a Responses API, or drop "
                 "use_previous_response_id to send the full history."
                 if self.use_previous_response_id
-                else "Name each deployment '<provider>/responses/<model>', or "
-                "disable use_responses_api."
+                else ""
             )
             raise ValueError(
                 f"{flag}=True, but litellm would not send every deployment "
-                f"of model group {group!r} to a Responses API:{lines} {fix}"
+                f"of model group {group!r} to a Responses API:{lines}{fix}"
             )
         if self.use_previous_response_id:
             # This value is generated from a prior response and is not a routing

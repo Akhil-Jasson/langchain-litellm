@@ -185,8 +185,7 @@ async def test_each_deployment_outside_a_responses_api_is_named(method: str) -> 
         ),
         (
             "- 'anthropic/responses/claude-sonnet-4-5': litellm has no Responses API "
-            "for provider 'anthropic' Name each deployment '<provider>/responses/"
-            "<model>', or disable use_responses_api."
+            "for provider 'anthropic'"
         ),
     ]
 
@@ -425,8 +424,7 @@ async def test_a_deployment_that_asks_for_chat_completions_is_named(
         "use_responses_api=True, but litellm would not send every deployment of "
         "model group 'g' to a Responses API:\n"
         "- 'openai/chat_completions/gpt-5-pro': its name asks for Chat Completions; "
-        "name it 'openai/responses/gpt-5-pro' Name each deployment "
-        "'<provider>/responses/<model>', or disable use_responses_api."
+        "name it 'openai/responses/gpt-5-pro'"
     )
 
 
@@ -508,8 +506,7 @@ async def test_litellm_s_model_aliases_apply_to_each_deployment(
     assert refusal.splitlines()[1:] == [
         (
             "- 'openai/responses/gpt-4o-mini': litellm sends it to Chat Completions, "
-            "since litellm.model_alias_map renames it 'openai/gpt-4o-mini' Name each "
-            "deployment '<provider>/responses/<model>', or disable use_responses_api."
+            "since litellm.model_alias_map renames it 'openai/gpt-4o-mini'"
         )
     ]
 
@@ -658,8 +655,7 @@ async def test_a_deployment_id_replaces_the_model(
     assert refusal.splitlines()[1:] == [
         (
             "- 'azure/responses/gpt-5': litellm sends it to Chat Completions, since "
-            "its deployment_id 'gpt5-dep' replaces the model name Name each "
-            "deployment '<provider>/responses/<model>', or disable use_responses_api."
+            "its deployment_id 'gpt5-dep' replaces the model name"
         )
     ]
 

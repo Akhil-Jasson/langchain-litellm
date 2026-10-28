@@ -585,6 +585,56 @@ def test_router_chains_deployments_sharing_a_named_credential(
     assert json.loads(requests[0].content)["previous_response_id"] == "resp_previous"
 
 
+def test_router_chaining_names_each_deployment_outside_a_responses_api(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The fix follows the deployment list, which already names any rename."""
+    requests = serve_http(monkeypatch, responses_api_reply(message_item("ok")))
+    llm = ChatLiteLLMRouter(
+        router=_store_test_router({"model": "openai/gpt-4o-mini"}),
+        model_name="g",
+        use_previous_response_id=True,
+    )
+
+    with pytest.raises(ValueError) as exc_info:
+        llm.invoke("Hi")
+
+    assert str(exc_info.value) == (
+        "use_previous_response_id=True, but litellm would not send every deployment "
+        "of model group 'g' to a Responses API:\n"
+        "- 'openai/gpt-4o-mini': litellm sends it to Chat Completions; name it "
+        "'openai/responses/gpt-4o-mini'\n"
+        "Chain only deployments litellm sends to a Responses API, or drop "
+        "use_previous_response_id to send the full history."
+    )
+    assert requests == []
+
+
+def test_router_chaining_refuses_fallbacks_with_a_fix(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A fallback can answer from another store, so removing it is the fix."""
+    requests = serve_http(monkeypatch, responses_api_reply(message_item("ok")))
+    llm = ChatLiteLLMRouter(
+        router=_store_test_router(
+            {"model": "openai/responses/gpt-4o-mini"}, fallbacks=[{"g": ["h"]}]
+        ),
+        model_name="g",
+        use_previous_response_id=True,
+    )
+
+    with pytest.raises(ValueError) as exc_info:
+        llm.invoke("Hi")
+
+    assert str(exc_info.value) == (
+        "use_previous_response_id=True, but the Router sets fallbacks, so a call to "
+        "model group 'g' may reach deployments ChatLiteLLMRouter cannot check. "
+        "Chained calls must reach one response store, so remove that routing or "
+        "disable use_previous_response_id."
+    )
+    assert requests == []
+
+
 @pytest.mark.parametrize("source", ["deployment", "router_defaults"])
 def test_router_rejects_store_false(
     monkeypatch: pytest.MonkeyPatch, source: str
