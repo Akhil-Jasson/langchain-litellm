@@ -35,6 +35,7 @@ from langchain_litellm.chat_models.litellm import (
     _keep_thinking_blocks,
     _rejoin_split_reply,
     _response_id_metadata,
+    _response_store_key,
     _responses_api_gap,
     _sends_manual_thinking,
     _sends_to_responses_api,
@@ -377,7 +378,19 @@ class ChatLiteLLMRouter(ChatLiteLLM):
             raise ValueError(
                 f"{flag}=True, but no model_list entry has model_name "
                 f"{group!r}, so ChatLiteLLMRouter cannot tell which deployments serve "
-                "it, such as a wildcard one."
+                "it, such as a wildcard one. Add an explicit deployment for the "
+                f"group or disable {flag}."
+            )
+        if self.use_previous_response_id and (
+            litellm.use_litellm_proxy is True
+            or litellm.get_secret_bool("USE_LITELLM_PROXY") is True
+        ):
+            raise ValueError(
+                "use_previous_response_id=True cannot safely chain model "
+                f"group {group!r} because litellm.use_litellm_proxy or "
+                "USE_LITELLM_PROXY is enabled and the proxy may select a "
+                "different response store. Disable proxy routing or disable "
+                "use_previous_response_id."
             )
         # Replay ignores this one: the mirrored reply never reaches the caller.
         mirrors = [d["silent_model"] for d in deployments if d.get("silent_model")]
@@ -386,7 +399,8 @@ class ChatLiteLLMRouter(ChatLiteLLM):
                 f"{flag}=True, but a deployment of model group {group!r} "
                 "sets silent_model, so the Router also sends each call to "
                 f"{', '.join(repr(m) for m in dict.fromkeys(mirrors))}, which "
-                "ChatLiteLLMRouter does not check."
+                "ChatLiteLLMRouter does not check. Remove silent_model or disable "
+                f"{flag}."
             )
         gaps: dict[str, str] = {}
         for deployment in deployments:
@@ -395,9 +409,16 @@ class ChatLiteLLMRouter(ChatLiteLLM):
                 gaps.setdefault(deployment["model"], gap)
         if gaps:
             lines = "".join(f"\n- {model!r}: {gap}" for model, gap in gaps.items())
+            fix = (
+                "Chain an OpenAI or Azure Responses deployment, or drop "
+                "use_previous_response_id to send the full history."
+                if self.use_previous_response_id
+                else "Name each deployment '<provider>/responses/<model>', or "
+                "disable use_responses_api."
+            )
             raise ValueError(
                 f"{flag}=True, but litellm would not send every deployment "
-                f"of model group {group!r} to a Responses API:{lines}"
+                f"of model group {group!r} to a Responses API:{lines} {fix}"
             )
         if self.use_previous_response_id:
             # This value is generated from a prior response and is not a routing
@@ -408,14 +429,76 @@ class ChatLiteLLMRouter(ChatLiteLLM):
                 for key, value in sent.items()
                 if key != "previous_response_id"
             }
-            if self._group_endpoint(store_params, super()._reasoning_endpoint) is None:
+            deployments = self._deployments(store_params)
+            if any(
+                deployment.get("store") is False
+                or (
+                    isinstance(deployment.get("extra_body"), Mapping)
+                    and deployment["extra_body"].get("store") is False
+                )
+                for deployment in deployments
+            ):
                 raise ValueError(
-                    "use_previous_response_id=True requires all deployments in "
-                    f"model group {group!r} to share one Responses API store "
-                    "(endpoint and credentials). Use a group with a single shared "
-                    "store, or disable use_previous_response_id."
+                    "use_previous_response_id=True requires stored Responses API "
+                    f"replies, but store=False is configured in store or "
+                    f"extra_body for model group {group!r}. Remove store=False or "
+                    "disable use_previous_response_id."
+                )
+            store_keys = [
+                self._deployment_store_key(deployment) for deployment in deployments
+            ]
+            if any(key is None for key in store_keys):
+                raise ValueError(
+                    "use_previous_response_id=True cannot resolve the response "
+                    f"store for every deployment of model group {group!r}. Set a "
+                    "supported provider and API base, or disable "
+                    "use_previous_response_id."
+                )
+            if any(key != store_keys[0] for key in store_keys[1:]):
+                differences = []
+                if len({key[0] for key in store_keys if key is not None}) > 1:
+                    differences.append("different providers")
+                if len({key[1] for key in store_keys if key is not None}) > 1:
+                    differences.append("different API base URLs")
+                if len({key[2] for key in store_keys if key is not None}) > 1:
+                    differences.append("different credentials")
+                raise ValueError(
+                    "use_previous_response_id=True cannot safely chain model "
+                    f"group {group!r} because deployments use "
+                    f"{', '.join(differences)}. Configure the deployments with "
+                    "one shared provider, API base, and credentials, or disable "
+                    "use_previous_response_id."
                 )
         return group
+
+    @staticmethod
+    def _deployment_store_key(
+        deployment: Mapping[str, Any],
+    ) -> tuple[str, tuple[str, ...], tuple[str, ...]] | None:
+        """Resolve the provider and server/account identity for one deployment."""
+        model = deployment.get("model")
+        provider = deployment.get("custom_llm_provider")
+        if deployment.get("azure") is True:
+            provider = "azure"
+        if deployment.get("deployment_id") is not None:
+            model = deployment["deployment_id"]
+            provider = "azure"
+        model = _aliased(model) or model
+        try:
+            _, provider, _, _ = litellm.get_llm_provider(
+                model=model,
+                custom_llm_provider=provider,
+                api_base=deployment.get("base_url") or deployment.get("api_base"),
+            )
+        except litellm.BadRequestError:
+            return None
+        return _response_store_key(
+            provider,
+            deployment.get("base_url") or deployment.get("api_base"),
+            deployment.get("api_key"),
+            deployment.get("organization"),
+            deployment.get("extra_headers"),
+        )
 
     def _replay_params(self, params: dict[str, Any]) -> Mapping[str, Any]:
         """The group's deployment as sent. With an endpoint there is at least one,
@@ -655,6 +738,8 @@ class ChatLiteLLMRouter(ChatLiteLLM):
                 chunk.response_metadata = {
                     "model_name": self.model_name or self.model,
                     "model_provider": "litellm",
+                    # Named once: it holds for the whole response, and langchain
+                    # concatenates a string that two merged chunks both carry.
                     **deployment_metadata,
                 }
                 first_chunk_yielded = True
@@ -765,6 +850,8 @@ class ChatLiteLLMRouter(ChatLiteLLM):
                 chunk.response_metadata = {
                     "model_name": self.model_name or self.model,
                     "model_provider": "litellm",
+                    # Named once: it holds for the whole response, and langchain
+                    # concatenates a string that two merged chunks both carry.
                     **deployment_metadata,
                 }
                 first_chunk_yielded = True

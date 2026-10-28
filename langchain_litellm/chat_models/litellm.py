@@ -382,6 +382,31 @@ def _issuing_endpoint(
         provider, name = name.split("/", 1)
     if not provider or not name.startswith("responses/"):
         return None
+    store = _response_store_key(
+        provider, api_base, api_key, organization, extra_headers
+    )
+    if store is None:
+        return None
+    _, servers, credentials = store
+    issuer = "\0".join(
+        [provider, name.removeprefix("responses/").lower(), *servers, *credentials]
+    )
+    return _issuer_digest(issuer)
+
+
+def _response_store_key(
+    provider: str,
+    api_base: str | None,
+    api_key: str | None,
+    organization: str | None,
+    extra_headers: Mapping[str, Any] | None,
+) -> tuple[str, tuple[str, ...], tuple[str, ...]] | None:
+    """Identify a Responses API store without including the model name.
+
+    The values are compared only in memory and must never be logged or included in
+    errors: the credentials tuple contains secrets. Keep its sources and order in
+    sync with ``_issuing_endpoint``.
+    """
     env = provider.upper()
     bases = [
         api_base,
@@ -389,9 +414,10 @@ def _issuing_endpoint(
         os.environ.get(f"{env}_BASE_URL"),
         os.environ.get(f"{env}_API_BASE"),
     ]
-    servers = [_server(base) for base in bases]
-    if any(server is None for server in servers):
+    resolved_servers = [_server(base) for base in bases]
+    if any(server is None for server in resolved_servers):
         return None
+    servers = tuple(server or "" for server in resolved_servers)
     credentials = [
         api_key,
         getattr(litellm, "api_key", None),
@@ -407,15 +433,11 @@ def _issuing_endpoint(
             if header.lower() in _ACCOUNT_HEADERS
         ),
     ]
-    issuer = "\0".join(
-        [
-            provider,
-            name.removeprefix("responses/").lower(),
-            *[server or "" for server in servers],
-            *[str(credential or "") for credential in credentials],
-        ]
+    return (
+        provider,
+        servers,
+        tuple(str(credential or "") for credential in credentials),
     )
-    return _issuer_digest(issuer)
 
 
 @functools.lru_cache(maxsize=64)
@@ -1510,7 +1532,7 @@ class ChatLiteLLM(BaseChatModel):
     Responses API id (``resp_...``) are omitted and that id is sent as
     ``previous_response_id``. String system messages are retained as instructions,
     since the server does not inherit them. Chaining requires stored responses;
-    ``store=False`` therefore disables it. Router groups must share a response
+    ``store=False`` raises ``ValueError``. Router groups must share a response
     store, and Router Responses routing checks the deployments without renaming
     them. This option is a model field; an explicit ``previous_response_id`` takes
     precedence and leaves the supplied history intact.
@@ -1676,13 +1698,18 @@ class ChatLiteLLM(BaseChatModel):
         )
         routed = f"responses/{named.removeprefix('responses/')}"
         if not _sends_to_responses_api(routed, provider):
-            flag = (
-                "use_previous_response_id"
-                if self.use_previous_response_id
-                else "use_responses_api"
+            previous_id = self.use_previous_response_id
+            flag = "use_previous_response_id" if previous_id else "use_responses_api"
+            fix = (
+                "Chain an OpenAI or Azure Responses model, or drop "
+                "use_previous_response_id to send the full history."
+                if previous_id
+                else "Use a model litellm sends to a Responses API, or disable "
+                "use_responses_api."
             )
             raise ValueError(
-                f"{flag}=True, but litellm cannot send {model!r} to a Responses API."
+                f"{flag}=True, but litellm cannot send {model!r} to a Responses API. "
+                f"{fix}"
             )
         return f"{provider}/{routed}"
 
@@ -2023,28 +2050,43 @@ class ChatLiteLLM(BaseChatModel):
         self, response_id: str | None, params: Mapping[str, Any]
     ) -> None:
         """Refuse chaining when replies are not stored or fallbacks change stores."""
-        if self.use_previous_response_id and params.get("store") is False:
+        extra_body = params.get("extra_body")
+        if self.use_previous_response_id and (
+            params.get("store") is False
+            or (isinstance(extra_body, Mapping) and extra_body.get("store") is False)
+        ):
             raise ValueError(
                 "use_previous_response_id=True requires stored Responses API "
-                "replies; remove store=False."
+                "replies, but store=False was configured in store or extra_body. "
+                "Remove store=False or disable use_previous_response_id."
             )
-        if response_id is None:
+        if not self.use_previous_response_id:
             return
-        if (
-            any(
-                params.get(key)
+        fallback = next(
+            (
+                key
                 for key in (
                     "fallbacks",
                     "context_window_fallbacks",
                     "content_policy_fallbacks",
                 )
+                if params.get(key)
+            ),
+            None,
+        )
+        if fallback is not None or litellm.model_fallbacks:
+            cause = (
+                f"{fallback} is configured"
+                if fallback is not None
+                else "litellm.model_fallbacks is set"
             )
-            or litellm.model_fallbacks
-        ):
             raise ValueError(
-                "use_previous_response_id=True cannot be used with fallbacks; "
-                "a fallback may not share the response store that issued the id."
+                "use_previous_response_id=True cannot be used because "
+                f"{cause}; remove that fallback setting or disable "
+                "use_previous_response_id."
             )
+        if response_id is None:
+            return
 
     def _stream(
         self,

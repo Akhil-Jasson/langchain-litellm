@@ -1045,11 +1045,13 @@ def test_use_previous_response_id_resends_system_instructions(
 def test_use_previous_response_id_rejects_per_call_flag() -> None:
     llm = ChatLiteLLM(model="gpt-4o-mini", api_key="k")
 
-    with pytest.raises(
-        ValueError,
-        match="Set use_previous_response_id on the ChatLiteLLM model",
-    ):
+    with pytest.raises(ValueError) as exc_info:
         llm.invoke("hi", use_previous_response_id=True)
+
+    assert str(exc_info.value) == (
+        "Set use_previous_response_id on the ChatLiteLLM model, not in bind() or "
+        "per-call arguments."
+    )
 
 
 def test_use_previous_response_id_rejects_model_kwargs_flag() -> None:
@@ -1059,11 +1061,12 @@ def test_use_previous_response_id_rejects_model_kwargs_flag() -> None:
         model_kwargs={"use_previous_response_id": True},
     )
 
-    with pytest.raises(
-        ValueError,
-        match="not in model_kwargs",
-    ):
+    with pytest.raises(ValueError) as exc_info:
         llm.invoke("hi")
+
+    assert str(exc_info.value) == (
+        "Set use_previous_response_id on the ChatLiteLLM model, not in model_kwargs."
+    )
 
 
 def test_use_previous_response_id_rejects_store_false() -> None:
@@ -1074,11 +1077,44 @@ def test_use_previous_response_id_rejects_store_false() -> None:
         model_kwargs={"store": False},
     )
 
-    with pytest.raises(ValueError, match="requires stored Responses API replies"):
+    with pytest.raises(ValueError) as exc_info:
         llm.invoke("hi")
 
+    assert str(exc_info.value) == (
+        "use_previous_response_id=True requires stored Responses API replies, but "
+        "store=False was configured in store or extra_body. Remove store=False or "
+        "disable use_previous_response_id."
+    )
 
-def test_use_previous_response_id_rejects_fallbacks() -> None:
+
+def test_use_previous_response_id_rejects_extra_body_store_false(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stateless extra_body setting cannot support server-side chaining."""
+    requests = serve_http(monkeypatch, responses_api_reply(message_item("ok")))
+    llm = ChatLiteLLM(
+        model="gpt-4o-mini",
+        api_key="k",
+        use_previous_response_id=True,
+        model_kwargs={"extra_body": {"store": False}},
+    )
+
+    with pytest.raises(ValueError) as exc_info:
+        llm.invoke("hi")
+
+    assert str(exc_info.value) == (
+        "use_previous_response_id=True requires stored Responses API replies, but "
+        "store=False was configured in store or extra_body. Remove store=False or "
+        "disable use_previous_response_id."
+    )
+    assert requests == []
+
+
+def test_use_previous_response_id_rejects_fallbacks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Model fallbacks are rejected before the first turn is sent."""
+    requests = serve_http(monkeypatch, responses_api_reply(message_item("ok")))
     llm = ChatLiteLLM(
         model="gpt-4o-mini",
         api_key="k",
@@ -1086,14 +1122,38 @@ def test_use_previous_response_id_rejects_fallbacks() -> None:
         model_kwargs={"fallbacks": [{"model": "openai/gpt-4o-mini"}]},
     )
 
-    with pytest.raises(ValueError, match="cannot be used with fallbacks"):
-        llm.invoke(
-            [
-                HumanMessage("Earlier"),
-                AIMessage("A", response_metadata={"id": "resp_1"}),
-                HumanMessage("Next"),
-            ]
-        )
+    with pytest.raises(ValueError) as exc_info:
+        llm.invoke("first turn")
+
+    assert str(exc_info.value) == (
+        "use_previous_response_id=True cannot be used because fallbacks is "
+        "configured; remove that fallback setting or disable "
+        "use_previous_response_id."
+    )
+    assert requests == []
+
+
+def test_use_previous_response_id_rejects_global_fallbacks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """LiteLLM-wide fallbacks are rejected before the first turn is sent."""
+    requests = serve_http(monkeypatch, responses_api_reply(message_item("ok")))
+    monkeypatch.setattr(litellm, "model_fallbacks", [{"model": "openai/gpt-4o-mini"}])
+    llm = ChatLiteLLM(
+        model="gpt-4o-mini",
+        api_key="k",
+        use_previous_response_id=True,
+    )
+
+    with pytest.raises(ValueError) as exc_info:
+        llm.invoke("first turn")
+
+    assert str(exc_info.value) == (
+        "use_previous_response_id=True cannot be used because "
+        "litellm.model_fallbacks is set; remove that fallback setting or disable "
+        "use_previous_response_id."
+    )
+    assert requests == []
 
 
 @pytest.mark.parametrize("method", ["stream", "astream"])
@@ -3173,6 +3233,27 @@ def test_use_responses_api_keeps_its_own_cache_entries() -> None:
     ]
 
 
+def test_use_previous_response_id_keeps_its_own_cache_entries() -> None:
+    """A flag-off cached reply must not answer a call that chains Responses turns."""
+    cache = InMemoryCache()
+    plain = ChatLiteLLM(model="gpt-4o-mini", api_key="k", cache=cache)
+    chained = ChatLiteLLM(
+        model="gpt-4o-mini",
+        api_key="k",
+        cache=cache,
+        use_previous_response_id=True,
+    )
+
+    with patch.object(plain.client, "completion", return_value=_MOCK_OK) as completion:
+        plain.invoke("hi")
+        chained.invoke("hi")
+
+    assert [call.kwargs["model"] for call in completion.call_args_list] == [
+        "gpt-4o-mini",
+        "openai/responses/gpt-4o-mini",
+    ]
+
+
 def test_use_responses_api_refuses_a_provider_without_one() -> None:
     """litellm would answer over Anthropic's chat API, never reaching a Responses API."""
     llm = ChatLiteLLM(
@@ -3183,10 +3264,38 @@ def test_use_responses_api_refuses_a_provider_without_one() -> None:
 
     with (
         patch.object(llm.client, "completion") as completion,
-        pytest.raises(ValueError, match="cannot send"),
+        pytest.raises(ValueError) as exc_info,
     ):
         llm.invoke("hi")
 
+    assert str(exc_info.value) == (
+        "use_responses_api=True, but litellm cannot send "
+        "'anthropic/claude-3-5-sonnet-20241022' to a Responses API. Use a model "
+        "litellm sends to a Responses API, or disable use_responses_api."
+    )
+    completion.assert_not_called()
+
+
+def test_use_previous_response_id_refusal_explains_unsupported_model() -> None:
+    """The error names the unsupported route and a working alternative."""
+    llm = ChatLiteLLM(
+        model="anthropic/claude-3-5-sonnet-20241022",
+        api_key="k",
+        use_previous_response_id=True,
+    )
+
+    with (
+        patch.object(llm.client, "completion") as completion,
+        pytest.raises(ValueError) as exc_info,
+    ):
+        llm.invoke("hi")
+
+    assert str(exc_info.value) == (
+        "use_previous_response_id=True, but litellm cannot send "
+        "'anthropic/claude-3-5-sonnet-20241022' to a Responses API. Chain an "
+        "OpenAI or Azure Responses model, or drop use_previous_response_id to "
+        "send the full history."
+    )
     completion.assert_not_called()
 
 
