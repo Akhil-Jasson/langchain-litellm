@@ -316,6 +316,7 @@ async def test_router_use_previous_response_id_trims_history(
 async def test_router_use_previous_response_id_streams_and_chains(
     monkeypatch: pytest.MonkeyPatch, method: str
 ) -> None:
+    """A Router stream chains on the stored reply and sends only the new turn."""
     reply = responses_api_reply(message_item("Fine."))
     requests = serve_http(
         monkeypatch,

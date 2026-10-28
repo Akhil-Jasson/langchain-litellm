@@ -906,6 +906,7 @@ async def test_use_previous_response_id_streams_and_chains(
     "system", [SystemMessage("Rules"), ChatMessage(role="system", content="Rules")]
 )
 def test_use_previous_response_id_keeps_string_system_instructions(system: Any) -> None:
+    """A string system message stays, since the server never carries instructions over."""
     llm = ChatLiteLLM(model="gpt-4o-mini", api_key="k", use_previous_response_id=True)
     messages, response_id = llm._messages_for_request(
         [
@@ -922,6 +923,7 @@ def test_use_previous_response_id_keeps_string_system_instructions(system: Any) 
 
 
 def test_use_previous_response_id_does_not_retain_list_system_content() -> None:
+    """List content went as a stored input item, so the trim drops it."""
     llm = ChatLiteLLM(model="gpt-4o-mini", api_key="k", use_previous_response_id=True)
     history = [
         SystemMessage([{"type": "text", "text": "Rules"}]),
@@ -940,6 +942,7 @@ def test_use_previous_response_id_does_not_retain_list_system_content() -> None:
 def test_use_previous_response_id_skips_non_responses_ids(
     response_id: str | None,
 ) -> None:
+    """Only a ``resp_`` id chains; any other id sends the full history."""
     llm = ChatLiteLLM(model="gpt-4o-mini", api_key="k", use_previous_response_id=True)
     history = [
         HumanMessage("Old"),
@@ -954,6 +957,7 @@ def test_use_previous_response_id_skips_non_responses_ids(
 
 
 def test_use_previous_response_id_walks_back_past_chat_completion_id() -> None:
+    """A later non-Responses reply goes out with the turns after the stored one."""
     llm = ChatLiteLLM(model="gpt-4o-mini", api_key="k", use_previous_response_id=True)
     history = [
         HumanMessage("Old"),
@@ -970,6 +974,7 @@ def test_use_previous_response_id_walks_back_past_chat_completion_id() -> None:
 
 
 def test_explicit_previous_response_id_disables_history_trimming() -> None:
+    """A caller's own previous_response_id leaves the history as given."""
     llm = ChatLiteLLM(model="gpt-4o-mini", api_key="k", use_previous_response_id=True)
     history = [
         HumanMessage("Old"),
@@ -986,6 +991,7 @@ def test_explicit_previous_response_id_disables_history_trimming() -> None:
 
 
 def test_use_previous_response_id_flag_off_keeps_history() -> None:
+    """Without the flag, a history holding a stored id goes out whole."""
     llm = ChatLiteLLM(model="gpt-4o-mini", api_key="k")
     history = [
         HumanMessage("Old"),
@@ -1006,6 +1012,7 @@ def test_use_previous_response_id_flag_off_keeps_history() -> None:
 def test_use_previous_response_id_resends_system_instructions(
     monkeypatch: pytest.MonkeyPatch, kind: str, system: Any
 ) -> None:
+    """The chained request carries the system message as instructions."""
     requests = serve_http(monkeypatch, responses_api_reply(message_item("Fine.")))
     if kind == "model":
         llm = ChatLiteLLM(
@@ -1043,6 +1050,7 @@ def test_use_previous_response_id_resends_system_instructions(
 
 
 def test_use_previous_response_id_rejects_per_call_flag() -> None:
+    """The flag is a model field, so a per-call value is refused."""
     llm = ChatLiteLLM(model="gpt-4o-mini", api_key="k")
 
     with pytest.raises(ValueError) as exc_info:
@@ -1055,6 +1063,7 @@ def test_use_previous_response_id_rejects_per_call_flag() -> None:
 
 
 def test_use_previous_response_id_rejects_model_kwargs_flag() -> None:
+    """The flag in model_kwargs is refused rather than sent to the provider."""
     llm = ChatLiteLLM(
         model="gpt-4o-mini",
         api_key="k",
@@ -1070,6 +1079,7 @@ def test_use_previous_response_id_rejects_model_kwargs_flag() -> None:
 
 
 def test_use_previous_response_id_rejects_store_false() -> None:
+    """Chaining needs stored replies, so store=False is refused."""
     llm = ChatLiteLLM(
         model="gpt-4o-mini",
         api_key="k",
