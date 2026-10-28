@@ -483,6 +483,8 @@ class ChatLiteLLMRouter(ChatLiteLLM):
         if deployment.get("deployment_id") is not None:
             model = deployment["deployment_id"]
             provider = "azure"
+        if not isinstance(model, str):
+            return None
         model = _aliased(model) or model
         try:
             _, provider, _, _ = litellm.get_llm_provider(

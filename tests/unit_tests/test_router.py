@@ -391,7 +391,7 @@ def test_router_chains_deployments_sharing_a_response_store(
             cache_responses=True,
         )
     elif case == "global_cache":
-        monkeypatch.setattr(litellm, "cache", litellm.Cache(type="local"))
+        monkeypatch.setattr(litellm, "cache", litellm.Cache())
         router = _store_test_router(
             {"model": "openai/responses/gpt-4o-mini", "api_base": endpoint}
         )
@@ -442,7 +442,10 @@ def test_router_chains_deployments_sharing_a_response_store(
     [
         ("different_api_key", "different credentials"),
         ("different_api_base", "different API base URLs"),
-        ("openai_and_azure", "different providers"),
+        (
+            "openai_and_azure",
+            "different providers, different API base URLs, different credentials",
+        ),
         ("two_azure_resources", "different API base URLs"),
     ],
 )

@@ -185,7 +185,8 @@ async def test_each_deployment_outside_a_responses_api_is_named(method: str) -> 
         ),
         (
             "- 'anthropic/responses/claude-sonnet-4-5': litellm has no Responses API "
-            "for provider 'anthropic'"
+            "for provider 'anthropic' Name each deployment '<provider>/responses/"
+            "<model>', or disable use_responses_api."
         ),
     ]
 
@@ -230,7 +231,8 @@ async def test_a_group_no_model_list_entry_names_is_refused() -> None:
     assert refusal == (
         "use_responses_api=True, but no model_list entry has model_name "
         "'openai/responses/gpt-4o-mini', so ChatLiteLLMRouter cannot tell which "
-        "deployments serve it, such as a wildcard one."
+        "deployments serve it, such as a wildcard one. Add an explicit deployment "
+        "for the group or disable use_responses_api."
     )
 
 
@@ -423,7 +425,8 @@ async def test_a_deployment_that_asks_for_chat_completions_is_named(
         "use_responses_api=True, but litellm would not send every deployment of "
         "model group 'g' to a Responses API:\n"
         "- 'openai/chat_completions/gpt-5-pro': its name asks for Chat Completions; "
-        "name it 'openai/responses/gpt-5-pro'"
+        "name it 'openai/responses/gpt-5-pro' Name each deployment "
+        "'<provider>/responses/<model>', or disable use_responses_api."
     )
 
 
@@ -505,7 +508,8 @@ async def test_litellm_s_model_aliases_apply_to_each_deployment(
     assert refusal.splitlines()[1:] == [
         (
             "- 'openai/responses/gpt-4o-mini': litellm sends it to Chat Completions, "
-            "since litellm.model_alias_map renames it 'openai/gpt-4o-mini'"
+            "since litellm.model_alias_map renames it 'openai/gpt-4o-mini' Name each "
+            "deployment '<provider>/responses/<model>', or disable use_responses_api."
         )
     ]
 
@@ -654,7 +658,8 @@ async def test_a_deployment_id_replaces_the_model(
     assert refusal.splitlines()[1:] == [
         (
             "- 'azure/responses/gpt-5': litellm sends it to Chat Completions, since "
-            "its deployment_id 'gpt5-dep' replaces the model name"
+            "its deployment_id 'gpt5-dep' replaces the model name Name each "
+            "deployment '<provider>/responses/<model>', or disable use_responses_api."
         )
     ]
 
@@ -676,7 +681,8 @@ async def test_a_deployment_that_mirrors_the_call_is_refused() -> None:
     assert await _refused(llm, "invoke") == (
         "use_responses_api=True, but a deployment of model group 'g' sets "
         "silent_model, so the Router also sends each call to 'chat', which "
-        "ChatLiteLLMRouter does not check."
+        "ChatLiteLLMRouter does not check. Remove silent_model or disable "
+        "use_responses_api."
     )
 
 

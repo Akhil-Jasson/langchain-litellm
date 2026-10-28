@@ -116,7 +116,7 @@ def _chained_model(kind: str) -> Any:
         return _base(use_previous_response_id=True)
     base = _router()
     return ChatLiteLLMRouter(
-        router=base.router, model_name="g", use_previous_response_id=True
+        router=base.router, model_name="gpt", use_previous_response_id=True
     )
 
 
