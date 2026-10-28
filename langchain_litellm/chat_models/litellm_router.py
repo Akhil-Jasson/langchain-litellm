@@ -455,9 +455,8 @@ class ChatLiteLLMRouter(ChatLiteLLM):
                 f"of model group {group!r} to a Responses API:{lines}{fix}"
             )
         if self.use_previous_response_id:
-            # This value is generated from a prior response and is not a routing
-            # setting. Exclude it while checking the one response store the group
-            # can reach, but leave caller-supplied values visible to other checks.
+            # previous_response_id names stored state, not a destination, so only the
+            # store check leaves it out; the checks above still see it.
             store_params = {
                 key: value
                 for key, value in sent.items()
