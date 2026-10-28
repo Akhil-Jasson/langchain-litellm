@@ -11,6 +11,7 @@ import httpx
 import litellm
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage
+from litellm.types.utils import CredentialItem
 
 from langchain_litellm._version import __version__
 from langchain_litellm.chat_models import ChatLiteLLMRouter
@@ -502,6 +503,86 @@ def test_router_refuses_deployments_with_different_response_stores(
         "use_previous_response_id."
     )
     assert requests == []
+
+
+def _named_credential_router(
+    monkeypatch: pytest.MonkeyPatch, *names: str
+) -> ChatLiteLLMRouter:
+    """A chaining Router whose deployments take key and base from named credentials."""
+    monkeypatch.setattr(
+        litellm,
+        "credential_list",
+        [
+            CredentialItem(
+                credential_name=name,
+                credential_values={
+                    "api_key": f"key-{name}",
+                    "api_base": f"https://{name}.example/v1",
+                },
+                credential_info={},
+            )
+            for name in ("acct-a", "acct-b")
+        ],
+    )
+    router = litellm.Router(
+        model_list=[
+            {
+                "model_name": "g",
+                "litellm_params": {
+                    "model": "openai/responses/gpt-4o-mini",
+                    "litellm_credential_name": name,
+                },
+            }
+            for name in names
+        ]
+    )
+    return ChatLiteLLMRouter(
+        router=router, model_name="g", use_previous_response_id=True
+    )
+
+
+def test_router_refuses_named_credentials_with_different_stores(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """litellm fills a deployment's key and base from its named credential first."""
+    requests = serve_http(monkeypatch, responses_api_reply(message_item("ok")))
+    llm = _named_credential_router(monkeypatch, "acct-a", "acct-b")
+
+    with pytest.raises(ValueError) as exc_info:
+        llm.invoke(
+            [
+                HumanMessage("Earlier"),
+                AIMessage("A", response_metadata={"id": "resp_previous"}),
+                HumanMessage("Next"),
+            ]
+        )
+
+    assert str(exc_info.value) == (
+        "use_previous_response_id=True cannot safely chain model group 'g' because "
+        "deployments use different API base URLs, different credentials. Configure "
+        "the deployments with one shared provider, API base, and credentials, or "
+        "disable use_previous_response_id."
+    )
+    assert requests == []
+
+
+def test_router_chains_deployments_sharing_a_named_credential(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two deployments on one named credential share its response store."""
+    requests = serve_http(monkeypatch, responses_api_reply(message_item("ok")))
+    llm = _named_credential_router(monkeypatch, "acct-a", "acct-a")
+
+    llm.invoke(
+        [
+            HumanMessage("Earlier"),
+            AIMessage("A", response_metadata={"id": "resp_previous"}),
+            HumanMessage("Next"),
+        ]
+    )
+
+    assert requests[0].url.host == "acct-a.example"
+    assert json.loads(requests[0].content)["previous_response_id"] == "resp_previous"
 
 
 @pytest.mark.parametrize("source", ["deployment", "router_defaults"])

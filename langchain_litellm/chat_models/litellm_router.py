@@ -55,20 +55,19 @@ def _without_none(params: Mapping[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in params.items() if value is not None}
 
 
-def _deployment_gap(deployment: Mapping[str, Any]) -> str | None:
-    """Why litellm does not send a deployment to a Responses API, or None when it
-    does, with the name that fixes it where renaming can.
+def _resolve_deployment(
+    deployment: Mapping[str, Any],
+) -> tuple[dict[str, Any], str, str | None, list[str]]:
+    """A deployment's params, model and provider as ``litellm.completion`` resolves
+    them before it picks the route, and what replaced its model.
 
-    The deployment is resolved in the order ``litellm.completion`` resolves it
-    before it picks the route: the named credential fills what is missing,
-    ``base_url`` replaces ``api_base``, the model alias applies, and the ``azure``
-    flag or a ``deployment_id`` forces Azure.
+    The named credential fills what is missing, the model alias applies, and the
+    ``azure`` flag or a ``deployment_id`` forces Azure.
     """
     resolved = dict(deployment)
     litellm.utils.load_credentials_from_list(resolved)
     model: str = resolved["model"]
     provider = resolved.get("custom_llm_provider")
-    # Where litellm replaces the model, renaming the deployment cannot help.
     replaced = []
     aliased = _aliased(model) or model
     if aliased != model:
@@ -82,12 +81,25 @@ def _deployment_gap(deployment: Mapping[str, Any]) -> str | None:
             f"its deployment_id {resolved['deployment_id']!r} replaces the model name"
         )
         model, provider = resolved["deployment_id"], "azure"
-    base_url = resolved.get("base_url")
+    return resolved, model, provider, replaced
+
+
+def _sent_base(params: Mapping[str, Any]) -> str | None:
+    """The base litellm sends to: ``base_url`` replaces ``api_base``."""
+    base_url = params.get("base_url")
+    return base_url if base_url is not None else params.get("api_base")
+
+
+def _deployment_gap(deployment: Mapping[str, Any]) -> str | None:
+    """Why litellm does not send a deployment to a Responses API, or None when it
+    does, with the name that fixes it where renaming can.
+
+    The deployment is resolved as ``_resolve_deployment`` resolves it.
+    """
+    resolved, model, provider, replaced = _resolve_deployment(deployment)
     try:
         named, provider, _, _ = litellm.get_llm_provider(
-            model=model,
-            custom_llm_provider=provider,
-            api_base=base_url if base_url is not None else resolved.get("api_base"),
+            model=model, custom_llm_provider=provider, api_base=_sent_base(resolved)
         )
     except litellm.BadRequestError:
         # A prompt-management deployment names its model only once the prompt loads.
@@ -95,12 +107,34 @@ def _deployment_gap(deployment: Mapping[str, Any]) -> str | None:
     gap = _responses_api_gap(named, provider)
     if gap is None:
         return None
+    # Where litellm replaces the model, renaming the deployment cannot help.
     if replaced:
         return f"{gap}, since {' and '.join(replaced)}"
     bare = named.removeprefix("chat_completions/").removeprefix("responses/")
     if _sends_to_responses_api(f"responses/{bare}", provider):
         return f"{gap}; name it '{provider}/responses/{bare}'"
     return gap
+
+
+def _deployment_store_key(
+    deployment: Mapping[str, Any],
+) -> tuple[str, tuple[str, ...], tuple[str, ...]] | None:
+    """The provider, servers and credentials that pick a deployment's response store,
+    resolved as ``_deployment_gap`` resolves it, or None when litellm cannot tell."""
+    resolved, model, provider, _ = _resolve_deployment(deployment)
+    try:
+        _, provider, _, _ = litellm.get_llm_provider(
+            model=model, custom_llm_provider=provider, api_base=_sent_base(resolved)
+        )
+    except litellm.BadRequestError:
+        return None
+    return _response_store_key(
+        provider,
+        _sent_base(resolved),
+        resolved.get("api_key"),
+        resolved.get("organization"),
+        resolved.get("extra_headers"),
+    )
 
 
 token_usage_key_name = "token_usage"  # nosec # incorrectly flagged as password
@@ -445,7 +479,7 @@ class ChatLiteLLMRouter(ChatLiteLLM):
                     "disable use_previous_response_id."
                 )
             store_keys = [
-                self._deployment_store_key(deployment) for deployment in deployments
+                _deployment_store_key(deployment) for deployment in deployments
             ]
             if any(key is None for key in store_keys):
                 raise ValueError(
@@ -470,37 +504,6 @@ class ChatLiteLLMRouter(ChatLiteLLM):
                     "use_previous_response_id."
                 )
         return group
-
-    @staticmethod
-    def _deployment_store_key(
-        deployment: Mapping[str, Any],
-    ) -> tuple[str, tuple[str, ...], tuple[str, ...]] | None:
-        """Resolve the provider and server/account identity for one deployment."""
-        model = deployment.get("model")
-        provider = deployment.get("custom_llm_provider")
-        if deployment.get("azure") is True:
-            provider = "azure"
-        if deployment.get("deployment_id") is not None:
-            model = deployment["deployment_id"]
-            provider = "azure"
-        if not isinstance(model, str):
-            return None
-        model = _aliased(model) or model
-        try:
-            _, provider, _, _ = litellm.get_llm_provider(
-                model=model,
-                custom_llm_provider=provider,
-                api_base=deployment.get("base_url") or deployment.get("api_base"),
-            )
-        except litellm.BadRequestError:
-            return None
-        return _response_store_key(
-            provider,
-            deployment.get("base_url") or deployment.get("api_base"),
-            deployment.get("api_key"),
-            deployment.get("organization"),
-            deployment.get("extra_headers"),
-        )
 
     def _replay_params(self, params: dict[str, Any]) -> Mapping[str, Any]:
         """The group's deployment as sent. With an endpoint there is at least one,
