@@ -415,9 +415,9 @@ def test_router_chains_deployments_sharing_a_response_store(
         )
     else:
         router = _store_test_router(
-            {"model": "openai/responses/gpt-4o-mini", "api_base": endpoint},
+            {"model": "openai/responses/gpt-5-pro", "api_base": endpoint},
             {
-                "model": "openai/responses/gpt-4o-mini",
+                "model": "openai/responses/gpt-5-pro",
                 "api_base": endpoint,
                 "reasoning_effort": "low",
             },
